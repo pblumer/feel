@@ -1,5 +1,7 @@
 # feel
 
+[![CI](https://github.com/pblumer/feel/actions/workflows/ci.yml/badge.svg)](https://github.com/pblumer/feel/actions/workflows/ci.yml)
+
 A standalone [FEEL](https://www.omg.org/spec/DMN/) (Friendly Enough Expression
 Language) engine for Go — the lexer, parser, type checker and compiler that
 lower FEEL expressions into reusable, allocation-light Go closures.
@@ -119,6 +121,33 @@ ok, err := feel.Matches(test, env.NewScope(map[string]value.Value{
 list size). Build a scope with `env.NewScopeWithLimits(values, limits)` — or
 share one `*feel.EvalState` across several evaluations with
 `env.NewScopeShared` — to bound evaluation of untrusted input.
+
+## Conformance
+
+FEEL is specified by the OMG **DMN** standard (FEEL is Chapter 10 of the spec).
+The recognised way to demonstrate conformance is the
+[**DMN Technology Compatibility Kit (TCK)**](https://github.com/dmn-tck/tck) —
+the community-maintained suite of DMN models with input/expected-output cases
+that vendors run and publish on a compatibility matrix.
+
+This engine is the FEEL core of [temis](https://github.com/pblumer/temis), a
+DMN 1.5 decision engine that runs the full TCK and passes
+**3,430 / 3,495 cases (98.1%)** — see the temis
+[TCK submission](https://github.com/pblumer/temis/tree/main/docs/tck-submission)
+and [documented exceptions](https://github.com/pblumer/temis/blob/main/docs/tck-exceptions.md).
+
+A caveat on scope: the TCK runs at the *DMN-model* level — it evaluates `.dmn`
+files and compares outputs, exercising FEEL through a DMN engine (temis' `dmn`
+package, which is **not** part of this module). So that 98.1% certifies the full
+temis engine, not this library in isolation. What this module carries is temis'
+own FEEL unit and fuzz suite, including the `wp41_*` tests written during the
+TCK-hardening work — the same semantics, encoded as package-level tests that run
+under `go test ./...`.
+
+If you need a standalone conformance signal for this library, the natural next
+step is a thin harness that feeds the TCK's FEEL-specific cases
+(`compliance-level-3/*-feel-*`) straight to `CompileString` without a DMN
+wrapper. That is not included here yet.
 
 ## Provenance & license
 
