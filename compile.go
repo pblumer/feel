@@ -61,6 +61,42 @@ func CompileStringWith(src string, env *Env, funcs map[string]*Func) (CompiledEx
 	return CompileWith(expr, env, funcs)
 }
 
+// CompileStringOpen is CompileStringRefs that also returns the open names: names
+// the expression reads only inside a filter that are neither in env nor a
+// function or built-in. Inside a filter such a name is not a compile error,
+// because it may be a key of a context element; at runtime it is that key, or
+// null. A caller that binds variables by name (and learns them from "unknown
+// variable" errors) adds the open names to env and compiles again, so a variable
+// read only inside a filter is bound like any other — the element's keys still
+// take precedence. Both lists are sorted and unique.
+func CompileStringOpen(src string, env *Env) (CompiledExpr, []string, []string, error) {
+	expr, err := ParseWithNames(src, nameOracle(nil))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	c := &compiler{env: env, builtins: builtins.Default(), used: map[string]bool{}, open: map[string]bool{}}
+	if env != nil {
+		c.rootNames = make(map[string]bool, len(env.Names()))
+		for _, n := range env.Names() {
+			c.rootNames[n] = true
+		}
+	}
+	ce := c.compile(expr)
+	if c.err != nil {
+		return nil, nil, nil, c.err
+	}
+	return ce, sortedKeys(c.used), sortedKeys(c.open), nil
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for n := range m {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // CompileStringRefs is CompileString that also returns which of env's variable
 // names the expression references (its free variables drawn from env). It lets a
 // caller learn an expression's dependencies without a separate AST walk — used by
@@ -127,6 +163,26 @@ type compiler struct {
 	// at runtime, so filter predicates can reference the keys of context
 	// elements directly (e.g. people[age > 18]).
 	implicit []int
+	// open, when non-nil, collects the names that resolve to no static slot,
+	// function or built-in and are looked up only against filter elements
+	// (CompileStringOpen). A caller that discovers its variables from compile
+	// errors never hears of them otherwise, since inside a filter such a name is
+	// not an error: it may be a key of the element.
+	open map[string]bool
+}
+
+// implicitAbove returns the enclosing filter element slots that are inner to
+// static slot i — the elements whose keys shadow the variable in slot i —
+// innermost last. Slots grow with nesting (Env.Append), so an element slot
+// greater than i was bound inside the scope of i.
+func (c *compiler) implicitAbove(i int) []int {
+	var out []int
+	for _, k := range c.implicit {
+		if k > i {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // withEnv runs fn with c.env temporarily replaced, restoring it afterwards. It
@@ -223,6 +279,24 @@ func (c *compiler) compile(e Expr) CompiledExpr {
 			if c.used != nil && c.rootNames[n.Name] {
 				c.used[n.Name] = true
 			}
+			// Inside a filter the keys of a context element are an inner scope
+			// (DMN 10.3.2.5): they shadow a variable bound outside the filter, and
+			// the variable is what a name reads when the element has no such key.
+			// A binding made inside the filter (a for or quantifier variable, a
+			// nested filter's item) is inner to the element and is read directly.
+			if outer := c.implicitAbove(i); len(outer) > 0 {
+				name := n.Name
+				return func(s *Scope) (value.Value, error) {
+					for k := len(outer) - 1; k >= 0; k-- {
+						if ctx, ok := s.at(outer[k]).(*value.Context); ok {
+							if v, ok := ctx.Get(name); ok {
+								return v, nil
+							}
+						}
+					}
+					return s.at(i), nil
+				}
+			}
 			return func(s *Scope) (value.Value, error) { return s.at(i), nil }
 		}
 		// A named user function (BKM / function definition) referenced as a value
@@ -241,6 +315,9 @@ func (c *compiler) compile(e Expr) CompiledExpr {
 		// Not a static variable: inside a filter, resolve against the enclosing
 		// context elements at runtime (innermost first); otherwise it is an error.
 		if len(c.implicit) > 0 {
+			if c.open != nil {
+				c.open[n.Name] = true
+			}
 			slots := append([]int(nil), c.implicit...)
 			name := n.Name
 			return func(s *Scope) (value.Value, error) {
